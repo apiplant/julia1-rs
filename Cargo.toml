@@ -1,0 +1,29 @@
+[package]
+name = "julia1"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Rust CPU/CUDA inference runtime for the Supersonic Labs Julia-1 decision model"
+
+[features]
+default = []
+cuda = ["dep:cudarc"]
+
+[dependencies]
+anyhow = "1"
+gemm = "0.19"
+half = "2"
+libm = "0.2"
+memmap2 = "0.9"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "driver", "cublas", "cuda-version-from-build-system", "dynamic-loading"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+lru = "0.18.5"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+debug = 1
