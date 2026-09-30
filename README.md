@@ -64,6 +64,31 @@ The API follows the Python runtime:
 - Validation errors match Python's `ValueError` cases: 2–20 options, strict-encoding
   rejections, noul criteria, and the rest.
 
+## Demo: Julia plays the Chrome dino game
+
+`examples/dino` serves the [T-Rex runner](https://github.com/congerh/dino) locally.
+The page samples the game state `--hz` times per second, each state becomes a named
+`choice` question (jump / duck / run) for Julia, and the page presses the chosen key.
+
+```bash
+export JULIA_CHECKPOINT=/path/to/Julia-1     # default: ../../ai/Julia-1
+
+cargo run --release --features cuda --example dino -- --device cuda   # GPU
+cargo run --release --example dino -- --device cpu --hz 20            # CPU
+```
+
+- Needs `git` on first run: the game is cloned into `examples/dino/game` (gitignored).
+  If the clone fails, clone it yourself and pass `--game DIR`.
+- The game is served at <http://127.0.0.1:8765/> and opened with `xdg-open`.
+  Use `--no-open` to skip that, `--port P` / `--host ADDR` to change the address.
+- Other flags: `--checkpoint DIR`, `--hz N` (1–120, default 30),
+  `--ground-prompt moment|window`, `--lead-ms MS`. Ctrl-C stops it.
+- Timing adapts to latency: the page reports its smoothed round trip (model time included)
+  with every state, and the server derives the look-ahead (RTT + 7.5 ms) and the landing
+  margin (sampling period + RTT + 4 ms) from it. `--lead-slack-ms` (7.5),
+  `--fall-slack-ms` (4.2) and `--rise-margin-ms` (20) tune the constants added on top;
+  `--lead-ms` pins a fixed look-ahead instead.
+
 ## Parity with the Python runtime
 
 `julia1 check` compares against reference dumps produced by `bench/py_bench.py

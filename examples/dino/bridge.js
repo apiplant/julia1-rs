@@ -6,7 +6,7 @@
   var HZ = __HZ__;
   var JUMP = 32, DUCK = 40;
   var CLIENT = Math.random().toString(36).slice(2, 6);
-  var busy = false, down = {}, games = 0, best = 0, stats = { n: 0, ms: 0 };
+  var busy = false, down = {}, games = 0, best = 0, stats = { n: 0, ms: 0 }, rtt = null;
 
   function key(type, code) {
     var r = Runner.instance_;
@@ -22,7 +22,7 @@
   function state(r) {
     var t = r.tRex;
     return {
-      client: CLIENT, playing: r.playing, crashed: r.crashed, speed: r.currentSpeed, distance: Math.ceil(r.distanceRan),
+      client: CLIENT, sample_ms: 1000 / HZ, rtt_ms: rtt === null ? 22.5 : rtt, playing: r.playing, crashed: r.crashed, speed: r.currentSpeed, distance: Math.ceil(r.distanceRan),
       trex: { x: t.xPos, y: t.yPos, ground_y: t.groundYPos, width: t.ducking ? t.config.WIDTH_DUCK : t.config.WIDTH,
               jumping: t.jumping, ducking: t.ducking },
       obstacles: r.horizon.obstacles.map(function (o) {
@@ -65,7 +65,9 @@
       .then(function (res) { return res.json(); })
       .then(function (d) {
         busy = false;
-        stats.n++; stats.ms += performance.now() - t0;
+        var dt = performance.now() - t0;
+        stats.n++; stats.ms += dt;
+        rtt = rtt === null ? dt : 0.8 * rtt + 0.2 * dt; // smoothed round trip, sent with the next state
         if (!Runner.instance_.crashed) apply(d.action, Runner.instance_);
         var p = Object.keys(d.probabilities).map(function (k) { return k + ' ' + (100 * d.probabilities[k]).toFixed(0) + '%'; });
         hud.textContent = 'Julia-1 (' + d.device + ') plays T-Rex   [viewer ' + CLIENT + ']\n' +

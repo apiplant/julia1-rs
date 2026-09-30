@@ -45,16 +45,48 @@ struct GameState {
     speed: f64,
     trex: Trex,
     obstacles: Vec<Obstacle>,
+    /// Measured browser round trip and sampling period; the defaults are the
+    /// conditions the margins below were first tuned under (22.5 ms RTT, 30 Hz).
+    #[serde(default = "default_rtt_ms")]
+    rtt_ms: f64,
+    #[serde(default = "default_sample_ms")]
+    sample_ms: f64,
+}
+
+fn default_rtt_ms() -> f64 {
+    22.5
+}
+
+fn default_sample_ms() -> f64 {
+    1000.0 / 30.0
 }
 
 const TREX_WIDTH: f64 = 44.0;
 const TREX_HEIGHT: f64 = 47.0;
 const TREX_DUCK_HEIGHT: f64 = 25.0;
 const FRAME_MS: f64 = 1000.0 / 60.0;
-/// Safety margins on the jump window: sampling (~33 ms at 30 Hz), the round trip
-/// and collision-box slack all shift the real jump relative to the computed one.
-const RISE_MARGIN_MS: f64 = 20.0;
-const FALL_MARGIN_MS: f64 = 60.0;
+/// Safety margins on the jump window: sampling, the round trip and collision-box
+/// slack all shift the real jump relative to the computed one. The landing margin
+/// is the sampling period + round trip + this slack (60 ms at 30 Hz / 22.5 ms).
+/// All three are tunable (`--rise-margin-ms`, `--fall-slack-ms`, `--lead-slack-ms`).
+static RISE_MARGIN_MS: Tunable = Tunable::new(20.0);
+static FALL_SLACK_MS: Tunable = Tunable::new(4.2);
+/// Extra lead beyond the round trip (key press landing on the next frame, jitter).
+static LEAD_SLACK_MS: Tunable = Tunable::new(7.5);
+
+struct Tunable(AtomicU64);
+
+impl Tunable {
+    const fn new(v: f64) -> Self {
+        Self(AtomicU64::new(v.to_bits()))
+    }
+    fn get(&self) -> f64 {
+        f64::from_bits(self.0.load(Ordering::Relaxed))
+    }
+    fn set(&self, v: f64) {
+        self.0.store(v.to_bits(), Ordering::Relaxed)
+    }
+}
 /// Obstacles closer than this behind the next one cannot be landed between; one
 /// jump must clear them together.
 const MERGE_GAP_MS: f64 = 250.0;
@@ -81,8 +113,9 @@ fn jump_heights(speed: f64) -> Vec<f64> {
 }
 
 /// `--ground-prompt window`: ask *when* to jump (now, +50 ms, …) instead of yes/no.
-/// `--lead-ms`: how far ahead of the sampled state decisions are made (sampling + round trip).
-static LEAD_MS: AtomicU64 = AtomicU64::new(30);
+/// `--lead-ms`: fixed lead (ms) ahead of the sampled state; 0 (default) derives it from
+/// the measured round trip.
+static LEAD_MS: AtomicU64 = AtomicU64::new(0);
 static WINDOW_PROMPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const DELAYS_MS: [f64; 5] = [0.0, 50.0, 100.0, 150.0, 200.0];
 
@@ -170,7 +203,7 @@ fn analyze(s: &GameState) -> Situation {
     let heights = jump_heights(s.speed);
     let high: Vec<usize> = (0..heights.len()).filter(|&i| heights[i] >= clearance).collect();
     let (up, down) = match (high.first(), high.last()) {
-        (Some(&a), Some(&b)) => (a as f64 * FRAME_MS + RISE_MARGIN_MS, (b + 1) as f64 * FRAME_MS - FALL_MARGIN_MS),
+        (Some(&a), Some(&b)) => (a as f64 * FRAME_MS + RISE_MARGIN_MS.get(), (b + 1) as f64 * FRAME_MS - (s.sample_ms + s.rtt_ms + FALL_SLACK_MS.get())),
         _ => (f64::INFINITY, 0.0),
     };
     let kind = if o.kind.starts_with("CACTUS") { "cactus" } else { "flying bird" };
@@ -254,7 +287,7 @@ fn oracle(s: &GameState) -> (&'static str, bool) {
         Class::Head => if sit.arrive < 150.0 { ("duck", false) } else { ("run", true) },
         Class::Ground => {
             // Look ~50 ms ahead (next sample plus latency).
-            let later = GameState { client: String::new(), obstacles: s.obstacles.iter().map(|o| Obstacle { x: o.x - s.speed * 3.0, ..o.clone() }).collect(), speed: s.speed, trex: s.trex };
+            let later = GameState { client: String::new(), obstacles: s.obstacles.iter().map(|o| Obstacle { x: o.x - s.speed * 3.0, ..o.clone() }).collect(), speed: s.speed, trex: s.trex, rtt_ms: s.rtt_ms, sample_ms: s.sample_ms };
             if sit.jump_clears() { ("jump", analyze(&later).jump_clears()) } else { ("run", sit.arrive >= sit.up) }
         }
     }
@@ -267,7 +300,8 @@ fn dump_cases() {
                                 ("CACTUS_LARGE", 90.0, 75.0, 50.0), ("PTERODACTYL", 100.0, 46.0, 40.0), ("PTERODACTYL", 75.0, 46.0, 40.0)] {
             for x in (40..500).step_by(12) {
                 let g = GameState { client: String::new(), speed, trex: Trex { x: 50.0, ground_y: 93.0, jumping: false },
-                                    obstacles: vec![Obstacle { kind: kind.into(), x: x as f64, y, width: w, height: h }] };
+                                    obstacles: vec![Obstacle { kind: kind.into(), x: x as f64, y, width: w, height: h }],
+                                    rtt_ms: default_rtt_ms(), sample_ms: default_sample_ms() };
                 let sit = analyze(&g);
                 let Some((state, questions)) = prompt(&sit) else { continue };
                 let (gold, can_wait) = oracle(&g);
@@ -296,7 +330,10 @@ fn act(engine: &Engine, stats: &Stats, body: &[u8]) -> Result<Value> {
         return Ok(json!({"action": "run", "probabilities": {}, "model_ms": 0.0, "summary": "airborne", "device": device}));
     }
     // Decide for where the game will be when the key press lands, not for the snapshot.
-    let lead = LEAD_MS.load(Ordering::Relaxed) as f64;
+    let lead = match LEAD_MS.load(Ordering::Relaxed) {
+        0 => game.rtt_ms + LEAD_SLACK_MS.get(),
+        fixed => fixed as f64,
+    };
     let game = GameState {
         obstacles: game.obstacles.iter().map(|o| Obstacle { x: o.x - game.speed * lead / FRAME_MS, ..o.clone() }).collect(),
         ..game
@@ -457,6 +494,9 @@ fn parse_args() -> Result<Args> {
             "--port" => args.port = value()?.parse()?,
             "--game" => args.game = value()?.into(),
             "--no-open" => args.open = false,
+            "--rise-margin-ms" => RISE_MARGIN_MS.set(value()?.parse()?),
+            "--fall-slack-ms" => FALL_SLACK_MS.set(value()?.parse()?),
+            "--lead-slack-ms" => LEAD_SLACK_MS.set(value()?.parse()?),
             "--lead-ms" => LEAD_MS.store(value()?.parse()?, Ordering::Relaxed),
             "--ground-prompt" => match value()?.as_str() {
                 "window" => WINDOW_PROMPT.store(true, Ordering::Relaxed),
@@ -468,7 +508,7 @@ fn parse_args() -> Result<Args> {
                 std::process::exit(0);
             }
             "-h" | "--help" => {
-                println!("usage: dino [--checkpoint DIR] [--device cpu|cuda] [--hz N] [--ground-prompt moment|window] [--lead-ms MS] [--host ADDR] [--port P] [--game DIR] [--no-open]");
+                println!("usage: dino [--checkpoint DIR] [--device cpu|cuda] [--hz N] [--ground-prompt moment|window] [--lead-ms MS] [--lead-slack-ms MS] [--fall-slack-ms MS] [--rise-margin-ms MS] [--host ADDR] [--port P] [--game DIR] [--no-open]");
                 std::process::exit(0);
             }
             other => bail!("unknown flag {other}"),
@@ -501,6 +541,8 @@ fn main() -> Result<()> {
         speed: 6.0,
         trex: Trex { x: 50.0, ground_y: 93.0, jumping: false },
         obstacles: vec![Obstacle { kind: "CACTUS_SMALL".into(), x: 120.0, y: 105.0, width: 17.0, height: 35.0 }],
+        rtt_ms: default_rtt_ms(),
+        sample_ms: default_sample_ms(),
     };
     let (state, questions) = prompt(&analyze(&warm)).context("warm-up needs a decision")?;
     for _ in 0..3 {
@@ -540,6 +582,8 @@ mod tests {
             speed: 6.0,
             trex: Trex { x: 50.0, ground_y: 93.0, jumping: false },
             obstacles: vec![Obstacle { kind: kind.into(), x, y, width: 46.0, height }],
+            rtt_ms: default_rtt_ms(),
+            sample_ms: default_sample_ms(),
         }
     }
 
