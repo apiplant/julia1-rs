@@ -6,6 +6,7 @@ use crate::request::{Request, argmax, display_probabilities, softmax_f32};
 use crate::weights::SafeTensors;
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -85,15 +86,13 @@ pub struct Prediction {
 }
 
 impl Engine {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load(checkpoint: impl AsRef<Path>, options: EngineOptions) -> Result<Self> {
         let root = checkpoint.as_ref();
         let config = ModelConfig::load(root)?;
         let max_length = options.max_length.unwrap_or(config.max_positions);
         if !(1..=config.max_positions).contains(&max_length) {
             bail!("max_length must be an integer between 1 and {}", config.max_positions);
-        }
-        if options.batch_size < 1 || options.max_batch_tokens < max_length {
-            bail!("Invalid batch size / token budget");
         }
         if root.join("INCOMPLETE").exists() || root.join("quantization.json").exists() {
             bail!("INT8 checkpoints are not supported by this runtime");
@@ -107,6 +106,47 @@ impl Engine {
             options.encoding_cache,
         )?;
         let tensors = SafeTensors::open(&root.join("model.safetensors"))?;
+        Self::assemble(config, encoder, tensors, max_length, options)
+    }
+
+    /// Builds the engine from checkpoint files already in memory, on the CPU backend: what the browser build
+    /// uses, where there is no filesystem.
+    pub fn from_parts(
+        julia_config: &serde_json::Value,
+        encoder_config: &serde_json::Value,
+        tokenizer_json: &[u8],
+        tokenizer_config: &str,
+        weights: Vec<u8>,
+        options: EngineOptions,
+    ) -> Result<Self> {
+        let config = ModelConfig::from_values(julia_config, encoder_config)?;
+        let max_length = options.max_length.unwrap_or(config.max_positions);
+        if !(1..=config.max_positions).contains(&max_length) {
+            bail!("max_length must be an integer between 1 and {}", config.max_positions);
+        }
+        let encoder = Encoder::from_parts(
+            tokenizer_json,
+            tokenizer_config,
+            max_length,
+            options.head_length,
+            options.strict_encoding,
+            options.token_cache,
+            options.encoding_cache,
+        )?;
+        let tensors = SafeTensors::from_bytes(weights)?;
+        Self::assemble(config, encoder, tensors, max_length, options)
+    }
+
+    fn assemble(
+        config: ModelConfig,
+        encoder: Encoder,
+        tensors: SafeTensors,
+        max_length: usize,
+        options: EngineOptions,
+    ) -> Result<Self> {
+        if options.batch_size < 1 || options.max_batch_tokens < max_length {
+            bail!("Invalid batch size / token budget");
+        }
         let weights = HostWeights::load(tensors, &config)?;
         let backend = match options.device {
             Device::Cpu => {

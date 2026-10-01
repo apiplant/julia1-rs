@@ -27,6 +27,8 @@ pub mod request;
 pub mod router;
 pub mod typed;
 pub mod weights;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 
 pub use engine::{Device, Engine, EngineOptions, Logits, Prediction, parse_rows};
 pub use request::{QType, Request, State, display_probabilities};

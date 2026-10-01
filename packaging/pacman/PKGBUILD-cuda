@@ -1,0 +1,30 @@
+# Maintainer: apiplant <releases@apiplant.com>
+#
+# Built by the release workflow, which fills in the version and checksum and
+# publishes the resulting package to apiplant.github.io/pacman. It is not an
+# AUR manifest: it installs the binaries the release already built.
+pkgname=julia1-rs-cuda
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Rust CPU/CUDA inference runtime for the Julia-1 decision model (CUDA build)"
+arch=('x86_64')
+url="https://github.com/apiplant/julia1-rs"
+license=('Apache-2.0')
+depends=('nvidia-utils' 'cuda')
+provides=('julia1-rs')
+conflicts=('julia1-rs')
+# The release archive holding the binaries and the README. The workflow builds
+# the package before the release exists and drops the archive next to this
+# file, which makepkg picks up instead of downloading; the URL is what makes
+# the PKGBUILD work on its own once the release is published.
+source=("$pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/julia1-rs-cuda-v$pkgver-x86_64-unknown-linux-gnu.tar.gz")
+sha256sums=('@SHA_LINUX_X86_64_CUDA@')
+# The release profile already strips symbols, and makepkg's strip pass on an
+# LTO'd binary buys nothing.
+options=('!strip' '!debug')
+
+package() {
+  local src="$srcdir/julia1-rs-cuda-v$pkgver-x86_64-unknown-linux-gnu"
+  install -Dm755 "$src/julia1" "$pkgdir/usr/bin/julia1"
+  install -Dm644 "$src/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

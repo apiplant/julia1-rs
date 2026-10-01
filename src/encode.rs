@@ -49,13 +49,28 @@ impl Encoder {
         token_cache: usize,
         encoding_cache: usize,
     ) -> Result<Self> {
+        let tokenizer = std::fs::read(dir.join("tokenizer.json"))?;
+        let config = std::fs::read_to_string(dir.join("tokenizer_config.json"))?;
+        Self::from_parts(&tokenizer, &config, max_length, head_length, strict, token_cache, encoding_cache)
+    }
+
+    /// Like [`Encoder::load`], from the contents of `tokenizer.json` and `tokenizer_config.json`.
+    pub fn from_parts(
+        tokenizer_json: &[u8],
+        tokenizer_config: &str,
+        max_length: usize,
+        head_length: usize,
+        strict: bool,
+        token_cache: usize,
+        encoding_cache: usize,
+    ) -> Result<Self> {
         if head_length + 4 >= max_length {
             bail!("max_length must leave room beyond the question head");
         }
-        let mut tokenizer = Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|e| anyhow!("{e}"))?;
+        let mut tokenizer = Tokenizer::from_bytes(tokenizer_json).map_err(|e| anyhow!("{e}"))?;
         tokenizer.with_truncation(None).map_err(|e| anyhow!("{e}"))?;
         tokenizer.with_padding(None);
-        let config: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("tokenizer_config.json"))?)?;
+        let config: Value = serde_json::from_str(tokenizer_config)?;
         let token = |key: &str| -> Result<(String, u32)> {
             let name = config.get(key).and_then(Value::as_str).with_context(|| format!("tokenizer lacks {key}"))?;
             let id = tokenizer.token_to_id(name).with_context(|| format!("unknown {key} {name}"))?;

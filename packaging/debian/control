@@ -1,0 +1,13 @@
+Package: julia1-rs
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Maintainer: apiplant <releases@apiplant.com>
+Installed-Size: @INSTALLED_SIZE@
+Homepage: https://github.com/apiplant/julia1-rs
+Description: Rust CPU/CUDA inference runtime for the Julia-1 decision model
+ julia1 runs the Supersonic Labs Julia-1 decision model (typed choice,
+ score and noul questions answered in one bidirectional pass) with an
+ AVX-512 CPU backend or a CUDA BF16 tensor-core backend. Point it at a
+ Julia-1 checkpoint directory with --checkpoint or JULIA_CHECKPOINT.

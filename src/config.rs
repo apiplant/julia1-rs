@@ -35,12 +35,18 @@ fn usize_of(v: &Value, key: &str) -> Result<usize> {
 impl ModelConfig {
     pub fn load(root: &Path) -> Result<Self> {
         let julia = read_json(&root.join("julia_config.json"))?;
+        let enc = read_json(&root.join("encoder/config.json"))?;
+        Self::from_values(&julia, &enc)
+    }
+
+    /// Builds the configuration from the parsed `julia_config.json` and `encoder/config.json`.
+    pub fn from_values(julia: &Value, enc: &Value) -> Result<Self> {
+        let (julia, enc) = (julia.clone(), enc.clone());
         ensure!(julia["format_version"] == 1, "Unsupported Julia checkpoint format");
         ensure!(
             julia.get("weight_dtype").and_then(Value::as_str).unwrap_or("float32") == "float32",
             "Only float32 Julia checkpoints are supported"
         );
-        let enc = read_json(&root.join("encoder/config.json"))?;
         ensure!(enc["model_type"] == "modernbert", "Encoder must be ModernBERT");
         for key in ["attention_bias", "mlp_bias", "norm_bias"] {
             ensure!(enc.get(key).and_then(Value::as_bool) == Some(false), "Unsupported encoder setting {key}");

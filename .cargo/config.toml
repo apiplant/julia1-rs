@@ -1,2 +1,7 @@
 [build]
 rustflags = ["-C", "target-cpu=native"]
+
+# The browser build: a target-specific table replaces [build] rustflags, so target-cpu=native does not leak in
+# (it would be meaningless for wasm anyway), and getrandom needs its JS backend selected explicitly.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

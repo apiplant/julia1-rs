@@ -1,0 +1,17 @@
+{
+  "name": "julia1",
+  "type": "module",
+  "description": "Rust CPU/CUDA inference runtime for the Supersonic Labs Julia-1 decision model",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "files": [
+    "julia1_bg.wasm",
+    "julia1.js",
+    "julia1.d.ts"
+  ],
+  "main": "julia1.js",
+  "types": "julia1.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

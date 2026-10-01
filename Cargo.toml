@@ -5,6 +5,10 @@ edition = "2024"
 license = "Apache-2.0"
 description = "Rust CPU/CUDA inference runtime for the Supersonic Labs Julia-1 decision model"
 
+[lib]
+name = "julia1"
+crate-type = ["rlib", "cdylib"]
+
 [features]
 default = []
 cuda = ["dep:cudarc"]
@@ -14,14 +18,25 @@ anyhow = "1"
 gemm = "0.19"
 half = "2"
 libm = "0.2"
-memmap2 = "0.9"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
-tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "driver", "cublas", "cuda-version-from-build-system", "dynamic-loading"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 lru = "0.18.5"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+memmap2 = "0.9"
+# onig is a C library; the browser build uses the pure-Rust regex engine instead.
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.2", features = ["js"] }
+getrandom3 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 
 [profile.release]
 codegen-units = 1

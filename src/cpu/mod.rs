@@ -23,7 +23,8 @@ pub struct CpuModel {
     w: HostWeights,
     /// RoPE cos/sin per encoder layer (layers sharing a base share a table).
     rope: Vec<Rope>,
-    pool: rayon::ThreadPool,
+    /// A dedicated pool, except where the platform has no threads (wasm), where work runs on the caller.
+    pool: Option<rayon::ThreadPool>,
     threads: usize,
     ws: Mutex<Workspace>,
     packed: Vec<PackedLayer>,
@@ -128,7 +129,10 @@ pub fn profile_report() -> String {
 
 impl CpuModel {
     pub fn new(cfg: ModelConfig, w: HostWeights, threads: usize) -> Result<Self> {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("julia-cpu-{i}")).build()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let pool = Some(rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("julia-cpu-{i}")).build()?);
+        #[cfg(target_arch = "wasm32")]
+        let pool = None;
         let mut tables: Vec<(f32, Rope)> = Vec::new();
         let rope = cfg
             .rope_theta
@@ -187,7 +191,10 @@ impl CpuModel {
     pub fn forward(&self, batch: &Batch) -> Result<Vec<Vec<f32>>> {
         let mut ws = self.ws.lock().unwrap();
         let ws: &mut Workspace = &mut ws;
-        let scores = self.pool.install(|| self.forward_packed(ws, batch))?;
+        let scores = match &self.pool {
+            Some(pool) => pool.install(|| self.forward_packed(ws, batch))?,
+            None => self.forward_packed(ws, batch)?,
+        };
         Ok(batch.split_scores(&scores))
     }
 

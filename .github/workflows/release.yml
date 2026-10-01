@@ -1,0 +1,734 @@
+name: release
+
+# Tag a version to cut a release:
+#
+#   git tag v0.x.0 && git push origin v0.x.0
+#
+# That builds julia1 for every supported platform (plus a CUDA-enabled build for Linux x86_64),
+# attaches the archives, checksums, and distro packages to the GitHub
+# release, and publishes the Homebrew formula and the apt and pacman repos.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (dry run: no release is published)"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # A release build is LTO + one codegen unit; the extra debug info earlier
+  # stages emit is stripped anyway.
+  CARGO_INCREMENTAL: 0
+  # workflow_dispatch has no tag ref: fall back to the tag input, or v0.0.0.
+  TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag || 'v0.0.0' }}
+
+jobs:
+  binaries:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            args: "--bins"
+            bins: "julia1"
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            args: "--bins"
+            bins: "julia1"
+          - target: aarch64-apple-darwin
+            os: macos-14
+            args: "--bins"
+            bins: "julia1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # The repository's .cargo/config.toml builds with -C target-cpu=native, which
+      # would produce a binary that only runs on the CI machine's CPU family.
+      - name: Drop the native-CPU build flags
+        run: rm -rf .cargo
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} ${{ matrix.args }}
+
+      # Catches a binary that built but cannot start (a missing shared library,
+      # a wrong-architecture artifact) before it is a release asset.
+      - name: Smoke test
+        shell: bash
+        run: |
+          for bin in ${{ matrix.bins }}; do
+            "target/${{ matrix.target }}/release/$bin" --version
+          done
+
+      # One archive per target, named after it, holding the binaries and the
+      # README — enough to unpack anywhere and run.
+      - name: Package
+        shell: bash
+        run: |
+          name="julia1-rs-${TAG}-${{ matrix.target }}"
+          mkdir "$name"
+          for bin in ${{ matrix.bins }}; do
+            cp "target/${{ matrix.target }}/release/$bin" "$name/"
+          done
+          cp README.md "$name/"
+          tar czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: |
+            julia1-rs-*.tar.gz
+            julia1-rs-*.tar.gz.sha256
+          if-no-files-found: error
+
+  # A second, CUDA-enabled build of the same binaries, x86_64 Linux only (the
+  # only platform with both a CUDA toolkit and an audience for it). It needs
+  # nvcc and the CUDA headers/stub libs at *build* time, not a GPU — the devel
+  # container image provides those without needing a GPU runner.
+  cuda-binary:
+    name: x86_64-unknown-linux-gnu (cuda)
+    runs-on: ubuntu-22.04
+    container: nvidia/cuda:12.8.1-devel-ubuntu22.04
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends curl build-essential pkg-config ca-certificates git
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-gnu-cuda
+
+      - name: Drop the native-CPU build flags
+        run: rm -rf .cargo
+
+      - name: Build
+        run: cargo build --release --locked --bins --features cuda
+
+      - name: Package
+        shell: bash
+        run: |
+          name="julia1-rs-cuda-${TAG}-x86_64-unknown-linux-gnu"
+          mkdir "$name"
+          for bin in julia1; do
+            cp "target/release/$bin" "$name/"
+          done
+          cp README.md "$name/"
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-x86_64-unknown-linux-gnu-cuda
+          path: |
+            julia1-rs-cuda-*.tar.gz
+            julia1-rs-cuda-*.tar.gz.sha256
+          if-no-files-found: error
+
+  # Repackaging, not building: the .debs and the pacman package are assembled
+  # on one runner from the archives the build jobs produced, because putting
+  # an already-built binary into an ar or zst archive is
+  # architecture-independent work.
+  packages:
+    name: distro packages
+    needs: [binaries, cuda-binary]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Build the Debian packages
+        run: |
+          version="${TAG#v}"
+          mkdir -p debs
+
+          # <package> <control file> <debian arch> <archive name prefix> <rust target>
+          build() {
+            local name="$1" control="$2" arch="$3" prefix="$4" triple="$5"
+
+            tar xzf "dist/$prefix-${TAG}-$triple.tar.gz"
+            local src="$prefix-${TAG}-$triple"
+            local root="stage/$name-$arch"
+
+            for bin in julia1; do
+              install -Dm755 "$src/$bin" "$root/usr/bin/$bin"
+            done
+            install -Dm644 "$src/README.md" "$root/usr/share/doc/$name/README.md"
+
+            # dpkg reports installed size in KiB, and dpkg-deb does not work
+            # it out on its own — a missing or wrong value is what makes
+            # `apt` mis-report what an install will cost.
+            local size
+            size=$(du -ks "$root/usr" | cut -f1)
+
+            install -d "$root/DEBIAN"
+            sed -e "s/@VERSION@/$version/" \
+                -e "s/@ARCH@/$arch/" \
+                -e "s/@INSTALLED_SIZE@/$size/" \
+                "packaging/debian/$control" > "$root/DEBIAN/control"
+
+            if grep -qE '@[A-Z_]+@' "$root/DEBIAN/control"; then
+              echo "::error::unsubstituted placeholder in $control" >&2
+              exit 1
+            fi
+
+            # Everything ships as root:root regardless of who the runner is.
+            dpkg-deb --root-owner-group --build "$root" \
+              "debs/${name}_${version}-1_${arch}.deb"
+          }
+
+          build julia1-rs control amd64 julia1-rs x86_64-unknown-linux-gnu
+          build julia1-rs control arm64 julia1-rs aarch64-unknown-linux-gnu
+          # The CUDA build, x86_64 only, from its own archive and control
+          # file (different Depends/Conflicts/Provides than the CPU build).
+          build julia1-rs-cuda control-cuda amd64 julia1-rs-cuda x86_64-unknown-linux-gnu
+
+          cd debs
+          for deb in *.deb; do shasum -a 256 "$deb" > "$deb.sha256"; done
+
+      # Only x86_64: the pacman repository serves that one architecture, and an
+      # aarch64 package would need either an arm runner or emulation for no
+      # audience. The Arch tooling comes from a container rather than the
+      # runner, so this stays a step in the same job as the .debs.
+      - name: Build the pacman packages
+        run: |
+          version="${TAG#v}"
+          mkdir -p pkg
+
+          # <package> <PKGBUILD template> <archive name prefix> <sha placeholder>
+          makepkg_build() {
+            local name="$1" template="$2" prefix="$3" placeholder="$4"
+            local archive="dist/$prefix-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+            local dir="build-$name"
+            mkdir -p "$dir"
+            sed \
+              -e "s/@VERSION@/$version/g" \
+              -e "s/$placeholder/$(sha256sum "$archive" | cut -d' ' -f1)/" \
+              "packaging/pacman/$template" > "$dir/PKGBUILD"
+
+            if grep -qE '@[A-Z_]+@' "$dir/PKGBUILD"; then
+              echo "::error::unsubstituted placeholder in $template" >&2
+              grep -nE '@[A-Z_]+@' "$dir/PKGBUILD" >&2
+              exit 1
+            fi
+
+            # The release does not exist yet, so the archive is placed under the
+            # name the source line gives it: makepkg checksums what is already
+            # there instead of fetching the URL.
+            cp "$archive" "$dir/$name-$version-x86_64.tar.gz"
+
+            # makepkg refuses to run as root, so the build runs as an unprivileged
+            # user inside the container — and the tree is handed back to the
+            # runner's own uid afterwards, or the steps below cannot write to it.
+            docker run --rm -v "$PWD/$dir:/pkg" -e "OWNER=$(id -u):$(id -g)" \
+              archlinux:base-devel bash -c '
+                set -eu
+                useradd -m builder
+                chown -R builder /pkg
+                su builder -c "cd /pkg && makepkg --cleanbuild --force --nodeps -p PKGBUILD"
+                chown -R "$OWNER" /pkg
+              '
+
+            [ -f "$dir/$name-$version-1-x86_64.pkg.tar.zst" ]
+            # Collected into one flat directory: the artifact upload below infers
+            # its root from the common ancestor of the paths it is given.
+            cp "$dir/$name-$version-1-x86_64.pkg.tar.zst" pkg/
+            (cd pkg && shasum -a 256 "$name-$version-1-x86_64.pkg.tar.zst" \
+              > "$name-$version-1-x86_64.pkg.tar.zst.sha256")
+          }
+
+          makepkg_build julia1-rs PKGBUILD julia1-rs @SHA_LINUX_X86_64@
+          makepkg_build julia1-rs-cuda PKGBUILD-cuda julia1-rs-cuda @SHA_LINUX_X86_64_CUDA@
+
+      # A package that installs but declares the wrong architecture, or that
+      # quietly lost a binary, is worth catching before it is a release asset.
+      - name: Check
+        run: |
+          version="${TAG#v}"
+          crate_version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          # A tag that disagrees with the crate would ship binaries that report
+          # a different version than the packages around them.
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$version" != "$crate_version" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $crate_version" >&2
+            exit 1
+          fi
+          deb="debs/julia1-rs_${version}-1_amd64.deb"
+          dpkg-deb --info "$deb"
+          for bin in julia1; do
+            dpkg-deb --contents "$deb" | grep -q "./usr/bin/$bin"
+          done
+          [ "$(dpkg-deb --field "debs/julia1-rs_${version}-1_arm64.deb" Architecture)" = arm64 ]
+
+          # The CUDA .deb declares a Depends on libcuda1, which the runner
+          # doesn't have and shouldn't be made to install (that would pull in
+          # an NVIDIA driver package on a CI box). Check its metadata and
+          # contents instead of installing it.
+          cuda_deb="debs/julia1-rs-cuda_${version}-1_amd64.deb"
+          dpkg-deb --info "$cuda_deb"
+          for bin in julia1; do
+            dpkg-deb --contents "$cuda_deb" | grep -q "./usr/bin/$bin"
+          done
+          dpkg-deb --field "$cuda_deb" Depends | grep -q libcuda1
+          [ "$(dpkg-deb --field "$cuda_deb" Conflicts)" = "julia1-rs" ]
+
+          # The runner is amd64, so only that one can actually be installed and
+          # run — which is the check that matters: `--version` proves the
+          # binaries survived the round trip.
+          sudo dpkg -i "$deb" || sudo apt-get install -fy
+          for bin in julia1; do
+            "$bin" --version | grep -q "$crate_version"
+          done
+          sudo dpkg -r julia1-rs
+
+          # The pacman packages cannot be installed on the runner, but their
+          # metadata and contents can be read back out of the archives.
+          check_pacman() {
+            docker run --rm -v "$PWD/pkg:/pkg" archlinux:base-devel bash -c "
+              set -eu
+              pkg=/pkg/$1-$version-1-x86_64.pkg.tar.zst
+              bsdtar -xOf \"\$pkg\" .PKGINFO | grep -qx 'pkgname = $1'
+              bsdtar -xOf \"\$pkg\" .PKGINFO | grep -qx 'pkgver = $version-1'
+              $2
+              for bin in julia1; do
+                bsdtar -tf \"\$pkg\" | grep -qx \"usr/bin/\$bin\"
+              done
+            "
+          }
+          check_pacman julia1-rs true
+          check_pacman julia1-rs-cuda "bsdtar -xOf \"\$pkg\" .PKGINFO | grep -qx 'conflict = julia1-rs'"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-packages
+          path: |
+            debs/*.deb
+            debs/*.deb.sha256
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pacman-package
+          path: |
+            pkg/*.pkg.tar.zst
+            pkg/*.pkg.tar.zst.sha256
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: [binaries, cuda-binary, packages]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: binary-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          name: debian-packages
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          name: pacman-package
+
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## Binaries
+
+            | platform | archive |
+            | --- | --- |
+            | macOS Apple Silicon | `julia1-rs-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz` |
+            | Linux x86_64 | `julia1-rs-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz` |
+            | Linux aarch64 | `julia1-rs-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz` |
+
+            Each archive holds `julia1` (macOS: `julia1`).
+
+            ## CUDA build
+
+            A CUDA-enabled build of the same binaries, Linux x86_64 only:
+            `julia1-rs-cuda-${{ env.TAG }}-x86_64-unknown-linux-gnu.tar.gz`.
+            Needs an NVIDIA GPU with compute capability 8.0+ and the cuBLAS runtime; SASS is built for sm_80/86/89/90/120. Requires a host CUDA driver compatible with the
+            toolkit version it was built against (see `packaging/README.md`).
+
+            ## Debian packages
+
+            ```
+            sudo dpkg -i julia1-rs_${{ steps.version.outputs.version }}-1_amd64.deb
+            ```
+
+            | platform | package |
+            | --- | --- |
+            | Debian/Ubuntu amd64 | `julia1-rs_${{ steps.version.outputs.version }}-1_amd64.deb` |
+            | Debian/Ubuntu arm64 | `julia1-rs_${{ steps.version.outputs.version }}-1_arm64.deb` |
+            | Debian/Ubuntu amd64, CUDA | `julia1-rs-cuda_${{ steps.version.outputs.version }}-1_amd64.deb` |
+
+            `julia1-rs-cuda` conflicts with `julia1-rs` (both install the same
+            binary names), so only one can be installed at a time. It depends on
+            `libcuda1`; see the CUDA build note above for driver compatibility.
+
+            ## Arch package
+
+            ```
+            sudo pacman -U julia1-rs-${{ steps.version.outputs.version }}-1-x86_64.pkg.tar.zst
+            ```
+
+            A CUDA build is published the same way, as
+            `julia1-rs-cuda-${{ steps.version.outputs.version }}-1-x86_64.pkg.tar.zst`,
+            conflicting with `julia1-rs`.
+
+            The same package is published to the signed pacman repository at
+            `apiplant.github.io/pacman`, which is the way to get updates with
+            `pacman -Syu` (one-time setup, then this repeats nothing):
+
+            ```
+            curl -sSfL https://apiplant.github.io/pacman/apiplant.gpg -o /tmp/apiplant.gpg
+            keyid=$(gpg --show-keys --with-colons /tmp/apiplant.gpg | awk -F: '/^pub:/ { print $5; exit }') && sudo pacman-key --add /tmp/apiplant.gpg && sudo pacman-key --finger "$keyid" && sudo pacman-key --lsign-key "$keyid"
+            printf '\n[apiplant]\nSigLevel = Required DatabaseOptional\nServer = https://apiplant.github.io/pacman/$arch\n' | sudo tee -a /etc/pacman.conf > /dev/null
+            sudo pacman -Sy julia1-rs # or julia1-rs-cuda
+            ```
+
+            ## apt
+
+            The Debian packages above are also published to the signed apt
+            repository at `apt.apiplant.com`, which is the way to get updates
+            with `apt upgrade` (one-time setup):
+
+            ```
+            curl -sSfL https://apt.apiplant.com/apiplant-archive-keyring.gpg | sudo tee /usr/share/keyrings/apiplant.gpg > /dev/null
+            echo "deb [signed-by=/usr/share/keyrings/apiplant.gpg] https://apt.apiplant.com stable main" | sudo tee /etc/apt/sources.list.d/apiplant.list > /dev/null
+            sudo apt update && sudo apt install julia1-rs # or julia1-rs-cuda
+            ```
+
+            ## Homebrew
+
+            ```
+            brew tap apiplant/tap
+            brew install apiplant/tap/julia1-rs        # or julia1-rs-cuda (Linux x86_64)
+            ```
+
+            Each archive and package has a matching `.sha256` file.
+
+  # The formula points at the release archives by URL, so it should only
+  # publish after the release itself exists — hence `needs: release` rather
+  # than running alongside it. Guarded on its credential: a fork, or this
+  # repository before the secret is set, skips it instead of failing the run.
+  homebrew:
+    name: homebrew tap
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Render the formulae
+        if: env.TAP_TOKEN != ''
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sha() { shasum -a 256 "dist/$1-${GITHUB_REF_NAME}-$2.tar.gz" | cut -d' ' -f1; }
+
+          sed \
+            -e "s/@VERSION@/$version/g" \
+            -e "s/@SHA_MACOS_ARM64@/$(sha julia1-rs aarch64-apple-darwin)/" \
+            -e "s/@SHA_LINUX_X86_64@/$(sha julia1-rs x86_64-unknown-linux-gnu)/" \
+            -e "s/@SHA_LINUX_ARM64@/$(sha julia1-rs aarch64-unknown-linux-gnu)/" \
+            "packaging/homebrew/julia1-rs.rb" > "/tmp/julia1-rs.rb"
+
+          sed \
+            -e "s/@VERSION@/$version/g" \
+            -e "s/@SHA_LINUX_X86_64_CUDA@/$(sha julia1-rs-cuda x86_64-unknown-linux-gnu)/" \
+            "packaging/homebrew/julia1-rs-cuda.rb" > "/tmp/julia1-rs-cuda.rb"
+
+          # A leftover placeholder means an archive was missing and `sha`
+          # returned nothing — publishing that formula would break `brew
+          # install` for everyone on that platform.
+          for f in /tmp/julia1-rs.rb /tmp/julia1-rs-cuda.rb; do
+            if grep -qE '@[A-Z_]+@' "$f"; then
+              echo "::error::unsubstituted placeholder in $f" >&2
+              grep -nE '@[A-Z_]+@' "$f" >&2
+              exit 1
+            fi
+          done
+
+      - name: Push to apiplant/homebrew-tap
+        if: env.TAP_TOKEN != ''
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          git clone --depth 1 \
+            "https://x-access-token:${TAP_TOKEN}@github.com/apiplant/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp /tmp/julia1-rs.rb tap/Formula/julia1-rs.rb
+          cp /tmp/julia1-rs-cuda.rb tap/Formula/julia1-rs-cuda.rb
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/julia1-rs.rb Formula/julia1-rs-cuda.rb
+          # Re-running a release for the same tag is a no-op rather than an error.
+          git diff --cached --quiet && exit 0
+          git commit -m "julia1-rs $version"
+          git push
+
+  # The apt repository is cumulative: the new .debs are copied into the pool
+  # alongside the packages from other apiplant releases, and the indices are
+  # regenerated over the whole pool.
+  apt:
+    name: apt repository
+    needs: [packages, release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # dpkg-scanpackages and apt-ftparchive are Debian's own tools; the runner
+    # has apt but not dpkg-dev, and a container is cheaper than installing it.
+    container: debian:bookworm
+    env:
+      APT_REPO_TOKEN: ${{ secrets.APT_REPO_TOKEN }}
+    steps:
+      - name: Install the archive tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends dpkg-dev apt-utils gnupg git ca-certificates
+
+      - uses: actions/checkout@v4
+        with:
+          path: source
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: debs
+          name: debian-packages
+
+      - name: Import the signing key
+        if: env.APT_REPO_TOKEN != ''
+        env:
+          GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$GPG_KEY" ]; then
+            echo "::error::APT_REPO_TOKEN is set but APT_GPG_PRIVATE_KEY is not" >&2
+            exit 1
+          fi
+          printf '%s\n' "$GPG_KEY" | gpg --batch --import
+          # The key id is needed explicitly: a CI keyring with one secret key
+          # still has no default, and an unsigned Release is one apt refuses.
+          gpg --list-secret-keys --with-colons \
+            | awk -F: '/^sec:/ { print $5; exit }' > /tmp/keyid
+          test -s /tmp/keyid
+
+      - name: Add the packages to the pool
+        if: env.APT_REPO_TOKEN != ''
+        run: |
+          git clone --depth 1 \
+            "https://x-access-token:${APT_REPO_TOKEN}@github.com/apiplant/apt.git" repo
+
+          # `pool/main/j/julia1-rs/` is the layout apt expects: component,
+          # then the first letter of the source package, then the package.
+          mkdir -p repo/pool/main/j/julia1-rs
+          cp debs/*.deb repo/pool/main/j/julia1-rs/
+
+          size=$(du -sm repo/pool | cut -f1)
+          if [ "$size" -gt 700 ]; then
+            echo "::warning::the apt pool is ${size}MB; GitHub Pages stops at 1GB." \
+                 "Prune old versions from apiplant/apt or move the pool elsewhere."
+          fi
+
+      - name: Generate the indices
+        if: env.APT_REPO_TOKEN != ''
+        working-directory: repo
+        run: |
+          for arch in amd64 arm64; do
+            dir="dists/stable/main/binary-$arch"
+            mkdir -p "$dir"
+            # /dev/null as the override file: there is no Debian override
+            # database here, and dpkg-scanpackages insists on the argument.
+            dpkg-scanpackages --arch "$arch" pool /dev/null > "$dir/Packages"
+            gzip -9kf "$dir/Packages"
+            test -s "$dir/Packages"
+          done
+
+          # Written outside the tree and moved in: apt-ftparchive checksums
+          # every file under dists/stable, and a Release file it is midway
+          # through writing is one of them.
+          apt-ftparchive -c ../source/packaging/apt/apt-ftparchive.conf \
+            release dists/stable > /tmp/Release
+          mv /tmp/Release dists/stable/Release
+
+      - name: Sign and publish
+        if: env.APT_REPO_TOKEN != ''
+        working-directory: repo
+        env:
+          GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          keyid=$(cat /tmp/keyid)
+
+          # A passphrase-less key needs no --passphrase, and passing an empty
+          # one to gpg is an error rather than a no-op. Held in the positional
+          # parameters rather than an array: this job runs in a container, where
+          # the step shell is plain sh and `pass=()` is a syntax error.
+          set --
+          if [ -n "$GPG_PASSPHRASE" ]; then
+            set -- --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE"
+          fi
+
+          # Both signatures: InRelease is what apt fetches, Release.gpg is what
+          # older clients and mirroring tools still look for.
+          gpg --batch --yes "$@" --local-user "$keyid" \
+            --clearsign -o dists/stable/InRelease dists/stable/Release
+          gpg --batch --yes "$@" --local-user "$keyid" \
+            --detach-sign --armor -o dists/stable/Release.gpg dists/stable/Release
+
+          # The keyring users install, dearmored so it can be dropped into
+          # /usr/share/keyrings and named by `signed-by` as-is.
+          rm -f apiplant.gpg
+          gpg --export "$keyid" > apiplant.gpg
+
+          # GitHub Pages runs Jekyll otherwise, which would rewrite parts of a
+          # tree that has to be served byte-for-byte.
+          touch .nojekyll
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "julia1-rs $version"
+          git push
+
+  # The pacman repository is cumulative: the new package files are copied into
+  # the architecture directory, signed, and added to the repository database
+  # alongside the packages from other apiplant releases. x86_64 only, matching
+  # what the `packages` job builds.
+  pacman:
+    name: pacman repository
+    needs: [release, packages]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      PACMAN_REPO_TOKEN: ${{ secrets.PACMAN_REPO_TOKEN }}
+    steps:
+      - name: Install the archive tools
+        run: pacman -Sy --noconfirm --needed git gnupg ca-certificates
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          name: pacman-package
+
+      - name: Import the signing key
+        if: env.PACMAN_REPO_TOKEN != ''
+        env:
+          GPG_KEY: ${{ secrets.PACMAN_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$GPG_KEY" ]; then
+            echo "::error::PACMAN_REPO_TOKEN is set but PACMAN_GPG_PRIVATE_KEY is not" >&2
+            exit 1
+          fi
+          printf '%s\n' "$GPG_KEY" | gpg --batch --import
+          gpg --list-secret-keys --with-colons \
+            | awk -F: '/^sec:/ { print $5; exit }' > /tmp/keyid
+          test -s /tmp/keyid
+
+      - name: Add the packages to the pool
+        if: env.PACMAN_REPO_TOKEN != ''
+        run: |
+          git clone --depth 1 \
+            "https://x-access-token:${PACMAN_REPO_TOKEN}@github.com/apiplant/pacman.git" repo
+
+          mkdir -p repo/x86_64
+          cp dist/*.pkg.tar.zst repo/x86_64/
+
+      - name: Sign, index and publish
+        if: env.PACMAN_REPO_TOKEN != ''
+        working-directory: repo
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PACMAN_GPG_PASSPHRASE }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          keyid=$(cat /tmp/keyid)
+
+          sign() {
+            rm -f "$1.sig"
+            if [ -n "$GPG_PASSPHRASE" ]; then
+              gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+                --local-user "$keyid" --detach-sign "$1"
+            else
+              gpg --batch --yes --local-user "$keyid" --detach-sign "$1"
+            fi
+          }
+
+          pkgs=$(printf '%s\n' "$PWD/x86_64"/*.pkg.tar.zst)
+          for pkg in $pkgs; do
+            sign "$pkg"
+          done
+
+          repo-add --include-sigs "x86_64/apiplant.db.tar.zst" $pkgs
+
+          # repo-add leaves apiplant.db and apiplant.files as symlinks to the
+          # .tar.zst files. git stores a symlink as its target path, and GitHub
+          # Pages serves that back as a plain text file — so `pacman -Sy` would
+          # download the string "apiplant.db.tar.zst" instead of a database.
+          # Real copies are what gets committed.
+          for name in apiplant.db apiplant.files; do
+            cp --remove-destination "x86_64/$name.tar.zst" "x86_64/$name"
+          done
+
+          sign "x86_64/apiplant.db"
+          sign "x86_64/apiplant.files"
+
+          rm -f apiplant.gpg
+          gpg --armor --export "$keyid" > apiplant.gpg
+          touch .nojekyll
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "julia1-rs $version"
+          git push

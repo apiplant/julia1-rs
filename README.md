@@ -191,3 +191,19 @@ python3 bench/py_bench.py export && python3 bench/py_bench.py reference --device
 `act_head` is unused at inference (`return_actions=False`), as in Python.
 
 `JULIA_PROFILE=1 julia1 bench ...` prints per-op CPU timings.
+
+## Install
+
+Prebuilt packages (julia1) for macOS (Apple Silicon), Linux x86_64 and Linux arm64:
+
+```bash
+brew tap apiplant/tap && brew install apiplant/tap/julia1-rs      # macOS, Linux
+sudo apt install julia1-rs      # Debian/Ubuntu, after adding apt.apiplant.com
+sudo pacman -S julia1-rs        # Arch, after adding apiplant.github.io/pacman
+```
+
+CUDA builds (Linux x86_64, NVIDIA GPU) are separate packages: `julia1-rs-cuda` (`brew install apiplant/tap/julia1-rs-cuda`, `sudo apt install julia1-rs-cuda`, `sudo pacman -S julia1-rs-cuda`). They conflict with `julia1-rs`.
+
+Setup commands for the apt and pacman repositories, the plain archives and the release process are in [`packaging/README.md`](packaging/README.md). Release archives are on the [releases page](https://github.com/apiplant/julia1-rs/releases).
+
+Website and in-browser demo: <https://julia1-rs.apiplant.com>.

@@ -1,0 +1,23 @@
+Package: julia1-rs-cuda
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Depends: libcuda1
+Recommends: nvidia-cuda-toolkit | libcublas12
+Conflicts: julia1-rs
+Replaces: julia1-rs
+Provides: julia1-rs
+Maintainer: apiplant <releases@apiplant.com>
+Installed-Size: @INSTALLED_SIZE@
+Homepage: https://github.com/apiplant/julia1-rs
+Description: Rust CPU/CUDA inference runtime for the Julia-1 decision model (CUDA build)
+ julia1 runs the Supersonic Labs Julia-1 decision model (typed choice,
+ score and noul questions answered in one bidirectional pass) with an
+ AVX-512 CPU backend or a CUDA BF16 tensor-core backend. Point it at a
+ Julia-1 checkpoint directory with --checkpoint or JULIA_CHECKPOINT. This
+ build is linked against CUDA. Needs an NVIDIA GPU with compute
+ capability 8.0+ and the cuBLAS runtime; SASS is built for
+ sm_80/86/89/90/120. libcuda1 (installed by the NVIDIA driver package)
+ satisfies the runtime link; it does not by itself guarantee
+ driver/toolkit compatibility.

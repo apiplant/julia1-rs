@@ -1,22 +1,54 @@
-//! Zero-copy safetensors access over a read-only memory map.
+//! Zero-copy safetensors access over a read-only memory map (or, where there is no filesystem, over bytes the
+//! caller already holds in memory).
 use anyhow::{Context, Result, bail, ensure};
+#[cfg(not(target_arch = "wasm32"))]
 use memmap2::Mmap;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs::File;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
+/// Where the checkpoint's bytes live.
+enum Backing {
+    #[cfg(not(target_arch = "wasm32"))]
+    Mmap(Mmap),
+    Owned(Vec<u8>),
+}
+
+impl std::ops::Deref for Backing {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Backing::Mmap(m) => m,
+            Backing::Owned(v) => v,
+        }
+    }
+}
+
 pub struct SafeTensors {
-    mmap: Mmap,
+    mmap: Backing,
     tensors: HashMap<String, (Vec<usize>, usize, usize)>,
 }
 
 impl SafeTensors {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open(path: &Path) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
         // SAFETY: the checkpoint must stay unchanged while loaded (same contract as the Python runtime).
         let mmap = unsafe { Mmap::map(&file)? };
+        Self::parse(Backing::Mmap(mmap))
+    }
+
+    /// Wraps a checkpoint that is already in memory (the browser build has no files to map).
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        Self::parse(Backing::Owned(bytes))
+    }
+
+    fn parse(mmap: Backing) -> Result<Self> {
         if mmap.starts_with(b"version https://git-lfs.github.com/spec/v1") {
             bail!("Checkpoint contains Git LFS pointers; fetch the real model weights first");
         }
