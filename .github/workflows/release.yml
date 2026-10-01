@@ -149,13 +149,61 @@ jobs:
             julia1-rs-cuda-*.tar.gz.sha256
           if-no-files-found: error
 
+  # The Arch CUDA package is built inside Arch against Arch's own `cuda` package. The Debian build
+  # above links the CUDA 12 cuBLAS (libcublas.so.12); Arch ships a newer CUDA with a different
+  # soname, so a binary built there fails to start with "libcublas.so.12: cannot open shared object
+  # file". Building where the package will be installed keeps the link and the `cuda` dependency
+  # in step (a later Arch CUDA major needs a rebuilt release).
+  cuda-binary-arch:
+    name: x86_64-unknown-linux-gnu (cuda, arch)
+    runs-on: ubuntu-latest
+    # Rolling Arch can break a CUDA build before anything in this repository changes; the Arch CUDA
+    # package then falls back to the generic CUDA archive instead of blocking the release.
+    continue-on-error: true
+    container: archlinux:base-devel
+    steps:
+      - name: Install build tools
+        run: pacman -Sy --noconfirm --needed rust cuda git 
+
+      - uses: actions/checkout@v4
+
+      - name: Drop the native-CPU build flags
+        run: rm -rf .cargo
+
+      - name: Build
+        shell: bash
+        run: |
+          export PATH=/opt/cuda/bin:$PATH CUDA_PATH=/opt/cuda CUDA_HOME=/opt/cuda
+          cargo build --release --locked --bins --features cuda
+
+      - name: Package
+        shell: bash
+        run: |
+          name="julia1-rs-cuda-arch-${TAG}-x86_64-unknown-linux-gnu"
+          mkdir "$name"
+          for bin in julia1; do
+            cp "target/release/$bin" "$name/"
+          done
+          cp README.md "$name/"
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-x86_64-unknown-linux-gnu-cuda-arch
+          path: |
+            julia1-rs-cuda-arch-*.tar.gz
+            julia1-rs-cuda-arch-*.tar.gz.sha256
+          if-no-files-found: error
+
   # Repackaging, not building: the .debs and the pacman package are assembled
   # on one runner from the archives the build jobs produced, because putting
   # an already-built binary into an ar or zst archive is
   # architecture-independent work.
   packages:
     name: distro packages
-    needs: [binaries, cuda-binary]
+    needs: [binaries, cuda-binary, cuda-binary-arch]
+    if: ${{ !cancelled() && needs.binaries.result == 'success' && needs.cuda-binary.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -232,6 +280,7 @@ jobs:
             mkdir -p "$dir"
             sed \
               -e "s/@VERSION@/$version/g" \
+              -e "s/@ARCHIVE_PREFIX@/$prefix/g" \
               -e "s/$placeholder/$(sha256sum "$archive" | cut -d' ' -f1)/" \
               "packaging/pacman/$template" > "$dir/PKGBUILD"
 
@@ -267,7 +316,14 @@ jobs:
           }
 
           makepkg_build julia1-rs PKGBUILD julia1-rs @SHA_LINUX_X86_64@
-          makepkg_build julia1-rs-cuda PKGBUILD-cuda julia1-rs-cuda @SHA_LINUX_X86_64_CUDA@
+          # Built against Arch's own CUDA when that job succeeded; otherwise the generic CUDA archive
+          # (which needs the CUDA 12 runtime) so a failure there does not block the whole release.
+          cuda_prefix=julia1-rs-cuda-arch
+          if [ ! -f "dist/$cuda_prefix-${TAG}-x86_64-unknown-linux-gnu.tar.gz" ]; then
+            echo "::warning::no Arch-built CUDA archive; the Arch CUDA package falls back to the CUDA 12 build"
+            cuda_prefix=julia1-rs-cuda
+          fi
+          makepkg_build julia1-rs-cuda PKGBUILD-cuda "$cuda_prefix" @SHA_LINUX_X86_64_CUDA@
 
       # A package that installs but declares the wrong architecture, or that
       # quietly lost a binary, is worth catching before it is a release asset.
@@ -344,7 +400,7 @@ jobs:
 
   release:
     name: publish release
-    needs: [binaries, cuda-binary, packages]
+    needs: [binaries, cuda-binary, cuda-binary-arch, packages]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
