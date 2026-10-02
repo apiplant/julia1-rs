@@ -45,7 +45,7 @@ jobs:
             args: "--bins"
             bins: "julia1"
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             args: "--bins"
             bins: "julia1"
     steps:
