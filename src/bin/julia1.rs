@@ -16,9 +16,11 @@ struct Cli {
 
 #[derive(Args, Clone)]
 struct EngineArgs {
-    /// Checkpoint directory (model.safetensors, encoder/, tokenizer/).
-    #[arg(long, env = "JULIA_CHECKPOINT", default_value = "../../ai/Julia-1")]
-    checkpoint: PathBuf,
+    /// Checkpoint directory (model.safetensors, encoder/, tokenizer/). Defaults to Julia-1 in the julia1-rs
+    /// cache directory (`$XDG_CACHE_HOME/julia1-rs`, else `~/.cache/julia1-rs`), downloaded there from Hugging
+    /// Face first if it is not present.
+    #[arg(long, env = "JULIA_CHECKPOINT")]
+    checkpoint: Option<PathBuf>,
     /// cpu, cuda or cuda:N
     #[arg(long, default_value = "cpu")]
     device: Device,
@@ -38,9 +40,13 @@ struct EngineArgs {
 
 impl EngineArgs {
     fn load(&self) -> Result<Engine> {
+        let checkpoint = match &self.checkpoint {
+            Some(dir) => dir.clone(),
+            None => julia1::download::download()?,
+        };
         let started = Instant::now();
         let engine = Engine::load(
-            &self.checkpoint,
+            &checkpoint,
             EngineOptions {
                 device: self.device,
                 max_length: self.max_length,
@@ -51,7 +57,7 @@ impl EngineArgs {
                 ..Default::default()
             },
         )?;
-        eprintln!("loaded {} on {} in {:.2}s", self.checkpoint.display(), engine.device_name(), started.elapsed().as_secs_f64());
+        eprintln!("loaded {} on {} in {:.2}s", checkpoint.display(), engine.device_name(), started.elapsed().as_secs_f64());
         Ok(engine)
     }
 }

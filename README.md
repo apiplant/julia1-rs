@@ -36,13 +36,13 @@ echo '{"state": "I was charged twice for the same order.", "questions": {"team":
   "instructions": "Which team should handle this request?",
   "criteria": {"billing": "Billing and payment disputes", "shipping": "Shipping and delivery",
                "access": "Account access and login"}}}}' \
-  | ./target/release/julia1 predict --checkpoint /path/to/Julia-1 --device cuda
+  | ./target/release/julia1 predict --device cuda      # --checkpoint /path/to/Julia-1 to use a local copy
 ```
 
 ```rust
 use julia1::{Engine, EngineOptions, Device, Request, QType, State};
 
-let engine = Engine::load("Julia-1", EngineOptions {
+let engine = Engine::load("Julia-1", EngineOptions {   // or Engine::from_pretrained(options): downloads into ~/.cache/julia1-rs
     device: Device::Cuda(0),          // or Device::Cpu (threads: JULIA_CPU_THREADS, default 4)
     strict_encoding: true,
     head_length: 512,                 // max_length defaults to the checkpoint's 8,192
@@ -71,7 +71,7 @@ The page samples the game state `--hz` times per second, each state becomes a na
 `choice` question (jump / duck / run) for Julia, and the page presses the chosen key.
 
 ```bash
-export JULIA_CHECKPOINT=/path/to/Julia-1     # default: ../../ai/Julia-1
+export JULIA_CHECKPOINT=/path/to/Julia-1     # default: downloaded into ~/.cache/julia1-rs
 
 cargo run --release --features cuda --example dino -- --device cuda   # GPU
 cargo run --release --example dino -- --device cpu --hz 20            # CPU
@@ -191,6 +191,33 @@ python3 bench/py_bench.py export && python3 bench/py_bench.py reference --device
 `act_head` is unused at inference (`return_actions=False`), as in Python.
 
 `JULIA_PROFILE=1 julia1 bench ...` prints per-op CPU timings.
+
+## Use as a library
+
+```toml
+[dependencies]
+julia1 = "0.1"                                   # CPU
+# julia1 = { version = "0.1", features = ["cuda"] }   # + CUDA (opt-in; needs nvcc to build)
+```
+
+CUDA is never on by default: enable the `cuda` feature from your own `Cargo.toml` (it compiles
+`src/cuda/kernels.cu` with nvcc). Without it the crate is pure Rust.
+
+```rust
+use julia1::{Engine, EngineOptions, State};
+
+// Downloads Julia-1 into ~/.cache/julia1-rs on first use (about 577 MB);
+// or `Engine::load("path/to/Julia-1", options)` for a local copy.
+let engine = Engine::from_pretrained(EngineOptions { strict_encoding: true, head_length: 512, ..Default::default() })?;
+let questions = serde_json::json!({"team": {"type": "choice",
+    "instructions": "Which team should handle this request?",
+    "criteria": {"billing": "Billing and payment disputes", "shipping": "Shipping and delivery"}}});
+let answers = engine.predict_typed(&State::from("I was charged twice."), &questions)?;
+println!("{}", answers[0].1.choice().unwrap());
+```
+
+The same engine compiles to WebAssembly (`wasm32-unknown-unknown`, CPU only): see `src/wasm.rs` and
+<https://julia1-rs.apiplant.com>.
 
 ## Install
 

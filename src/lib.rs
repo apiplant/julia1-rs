@@ -7,7 +7,8 @@
 //!
 //! ```no_run
 //! use julia1::{Engine, EngineOptions, State};
-//! let engine = Engine::load("Julia-1", EngineOptions { strict_encoding: true, head_length: 512, ..Default::default() })?;
+//! // Downloads Julia-1 into ~/.cache/julia1-rs on first use (about 577 MB); or `Engine::load("path/to/Julia-1", ..)`.
+//! let engine = Engine::from_pretrained(EngineOptions { strict_encoding: true, head_length: 512, ..Default::default() })?;
 //! let questions = serde_json::json!({"team": {"type": "choice",
 //!     "instructions": "Which team should handle this request?",
 //!     "criteria": {"billing": "Billing and payment disputes", "shipping": "Shipping and delivery"}}});
@@ -19,6 +20,8 @@ pub mod config;
 pub mod cpu;
 #[cfg(feature = "cuda")]
 pub mod cuda;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod download;
 pub mod encode;
 pub mod engine;
 pub mod model;

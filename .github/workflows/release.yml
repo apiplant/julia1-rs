@@ -172,6 +172,8 @@ jobs:
 
       - name: Build
         shell: bash
+        env:
+          CUDA_COMPUTE_CAP: "80"
         run: |
           export PATH=/opt/cuda/bin:$PATH CUDA_PATH=/opt/cuda CUDA_HOME=/opt/cuda
           cargo build --release --locked --bins --features cuda

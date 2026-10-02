@@ -109,6 +109,13 @@ impl Engine {
         Self::assemble(config, encoder, tensors, max_length, options)
     }
 
+    /// Loads Julia-1 from the julia1-rs cache directory, downloading it from Hugging Face first when it is
+    /// not there yet (see [`crate::download`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_pretrained(options: EngineOptions) -> Result<Self> {
+        Self::load(crate::download::download()?, options)
+    }
+
     /// Builds the engine from checkpoint files already in memory, on the CPU backend: what the browser build
     /// uses, where there is no filesystem.
     pub fn from_parts(

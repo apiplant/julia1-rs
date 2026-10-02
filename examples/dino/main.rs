@@ -464,7 +464,7 @@ fn handle(mut stream: TcpStream, game: &Path, bridge: &str, engine: &Engine, sta
 }
 
 struct Args {
-    checkpoint: PathBuf,
+    checkpoint: Option<PathBuf>,
     device: Device,
     hz: u32,
     host: String,
@@ -475,7 +475,7 @@ struct Args {
 
 fn parse_args() -> Result<Args> {
     let mut args = Args {
-        checkpoint: std::env::var("JULIA_CHECKPOINT").unwrap_or_else(|_| "../../ai/Julia-1".into()).into(),
+        checkpoint: std::env::var("JULIA_CHECKPOINT").ok().map(PathBuf::from),
         device: Device::Cpu,
         hz: 30,
         host: "127.0.0.1".into(),
@@ -487,7 +487,7 @@ fn parse_args() -> Result<Args> {
     while let Some(flag) = it.next() {
         let mut value = || it.next().with_context(|| format!("{flag} needs a value"));
         match flag.as_str() {
-            "--checkpoint" => args.checkpoint = value()?.into(),
+            "--checkpoint" => args.checkpoint = Some(value()?.into()),
             "--device" => args.device = value()?.parse()?,
             "--hz" => args.hz = value()?.parse()?,
             "--host" => args.host = value()?,
@@ -532,8 +532,12 @@ fn main() -> Result<()> {
 
     // Load once, then warm up so the first in-game decision is not slow.
     let started = Instant::now();
+    let checkpoint = match &args.checkpoint {
+        Some(dir) => dir.clone(),
+        None => julia1::download::download()?,
+    };
     let engine = Engine::load(
-        &args.checkpoint,
+        &checkpoint,
         EngineOptions { device: args.device, strict_encoding: true, head_length: 512, ..Default::default() },
     )?;
     let warm = GameState {

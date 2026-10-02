@@ -1,9 +1,14 @@
 [package]
 name = "julia1"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "Apache-2.0"
 description = "Rust CPU/CUDA inference runtime for the Supersonic Labs Julia-1 decision model"
+repository = "https://github.com/apiplant/julia1-rs"
+readme = "README.md"
+keywords = ["julia-1","decision-model","classification","routing","inference"]
+categories = ["science","text-processing","command-line-utilities"]
+exclude = ["assets/","bench/","examples/dino/game/","/.github/","/website/","/packaging/"]
 
 [lib]
 name = "julia1"
@@ -27,6 +32,7 @@ lru = "0.18.5"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 memmap2 = "0.9"
+ureq = "2"
 # onig is a C library; the browser build uses the pure-Rust regex engine instead.
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 
