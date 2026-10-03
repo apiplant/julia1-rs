@@ -66,8 +66,8 @@ function AnswerCard(props: { id: string; answer: Answer; question: unknown }) {
 }
 
 export function Playground() {
-  const [stateText, setStateText] = createSignal("");
-  const [questionsText, setQuestionsText] = createSignal("");
+  const [stateText, setStateText] = createSignal(JSON.stringify(PRESETS[0].state, null, 2));
+  const [questionsText, setQuestionsText] = createSignal(JSON.stringify(PRESETS[0].questions, null, 2));
   const [running, setRunning] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [answers, setAnswers] = createSignal<Record<string, Answer> | null>(null);
@@ -110,7 +110,7 @@ export function Playground() {
   }
 
   return (
-    <div class="mx-auto w-full max-w-5xl px-5 py-10">
+    <div class="mx-auto w-full max-w-6xl px-5 py-10">
       <p class="font-mono text-xs text-accent">100% client-side · runs in your browser via WebAssembly</p>
       <h1 class="mt-2 text-3xl font-semibold tracking-tight text-ink sm:text-4xl">Julia-1 playground</h1>
       <p class="mt-2 max-w-2xl leading-relaxed text-muted">
