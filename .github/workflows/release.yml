@@ -6,7 +6,7 @@ name: release
 #
 # That builds julia1 for every supported platform (plus a CUDA-enabled build for Linux x86_64),
 # attaches the archives, checksums, and distro packages to the GitHub
-# release, and publishes the Homebrew formula and the apt and pacman repos.
+# release, and publishes the julia1 library crate to crates.io.
 on:
   push:
     tags:
@@ -505,7 +505,35 @@ jobs:
             brew install apiplant/tap/julia1-rs        # or julia1-rs-cuda (Linux x86_64)
             ```
 
+            ## crates.io
+
+            ```
+            cargo install julia1     # binaries
+            cargo add julia1         # library
+            ```
+
             Each archive and package has a matching `.sha256` file.
+
+  # Publishing the library, not repackaging: `cargo publish` builds from the
+  # tagged source and uploads to crates.io directly, independent of the
+  # binary archives the other jobs assemble.
+  crates-io:
+    name: crates.io
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish
+        if: env.CARGO_REGISTRY_TOKEN != ''
+        run: cargo publish --locked
 
   # The formula points at the release archives by URL, so it should only
   # publish after the release itself exists — hence `needs: release` rather
