@@ -75,6 +75,25 @@ enum Command {
         #[arg(long)]
         logits: bool,
     },
+    /// Serve the named-question API over HTTP (`POST /v1/classifier`, alias `/v1/systemone`, `GET /health`).
+    /// Loads the checkpoint, binds, then runs until Ctrl-C/SIGTERM (an in-flight forward finishes first).
+    Serve {
+        #[command(flatten)]
+        engine: EngineArgs,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 8000)]
+        port: u16,
+        /// Model identity reported by /health; a request's optional `model` field must match it.
+        #[arg(long, default_value = "julia-1")]
+        model_name: String,
+        /// Max questions per request.
+        #[arg(long, env = "JULIA_MAX_REQUEST_BRANCHES", default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..))]
+        max_request_branches: u32,
+        /// Waiting slots on top of the one in-flight request; beyond that requests get 429.
+        #[arg(long, env = "JULIA_MAX_QUEUED", default_value_t = 16, value_parser = clap::value_parser!(u32).range(1..))]
+        max_queued: u32,
+    },
     /// Compare token ids and logits with the Python reference dumps from bench/py_bench.py.
     Check {
         #[command(flatten)]
@@ -109,11 +128,25 @@ enum Command {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Predict { engine, input, logits } => predict(&engine.load()?, input, logits),
+        Command::Serve { engine, host, port, model_name, max_request_branches, max_queued } => {
+            let config = julia1::server::ServerConfig { max_request_branches: max_request_branches as usize, max_queued: max_queued as usize };
+            ntex::rt::System::new("julia1", ntex::rt::DefaultRuntime).block_on(serve(engine, host, port, model_name, config))
+        }
         Command::Check { engine, data, reference } => check(&engine.load()?, &data, &reference),
         Command::Bench { engine, data, single, repeats, long_repeats, limit, output } => {
             bench(&engine, &engine.load()?, &data, single, repeats, long_repeats, limit, output)
         }
     }
+}
+
+async fn serve(args: EngineArgs, host: String, port: u16, model_name: String, config: julia1::server::ServerConfig) -> Result<()> {
+    let engine = std::sync::Arc::new(args.load()?);
+    let handle = julia1::server::start_server(&host, port, engine, model_name, config).await?;
+    eprintln!("julia1 serving '{}' on http://{}:{} (/v1/classifier, /v1/systemone, /health)", handle.model_name, host, handle.port);
+    // ntex handles Ctrl-C/SIGTERM: stop accepting, finish in-flight requests, exit.
+    handle.wait().await;
+    eprintln!("julia1 stopped");
+    Ok(())
 }
 
 fn predict(engine: &Engine, input: Option<PathBuf>, logits: bool) -> Result<()> {

@@ -64,6 +64,40 @@ The API follows the Python runtime:
 - Validation errors match Python's `ValueError` cases: 2–20 options, strict-encoding
   rejections, noul criteria, and the rest.
 
+## Serve over HTTP
+
+`julia1 serve` loads a checkpoint once and answers named-question requests over HTTP (an [ntex](https://ntex.rs)
+server; CPU or `--device cuda`):
+
+```bash
+julia1 serve                                   # Julia-1 from the cache, on 127.0.0.1:8000
+julia1 serve --checkpoint /path/to/Julia-1 --port 9000 --host 0.0.0.0
+```
+
+```bash
+curl -s localhost:8000/v1/classifier -H 'Content-Type: application/json' -d '{
+  "state": "I was charged twice for March.",
+  "questions": {"team": {"type": "choice", "instructions": "Which team should handle this request?",
+                         "criteria": {"billing": "Billing and payment disputes", "shipping": "Shipping and delivery"}}}
+}'
+# {"model":"julia-1","answers":{"team":{"type":"choice","probabilities":{"billing":0.75,"shipping":0.25},
+#   "choice":"billing","max_probability":0.75}},"usage":{"input_tokens":30,"output_tokens":0}}
+```
+
+| Endpoint | Description |
+| --- | --- |
+| `POST /v1/classifier` | `{"state", "questions", "model"?}`: the same inputs and answers as `predict_typed` |
+| `POST /v1/systemone` | Exact alias of `/v1/classifier` |
+| `GET /health` | `{"status":"ready","model":"julia-1"}`, no inference |
+
+`state` is text or a JSON object/array. A `model` field, if sent, must equal `--model-name` (default `julia-1`).
+Requests run one at a time behind a bounded queue (`--max-queued`, default 16): when it is full the server answers
+`429` with `Retry-After: 1`. Bad input (invalid JSON or questions, a strict-encoding rejection, more than
+`--max-request-branches` questions, a body over 1 MiB) is `422` with
+`{"error": {"message", "type": "invalid_request_error", "code": 422, "param"}}`; a failed forward is
+`500 {"detail": "internal error"}`. Ctrl-C or SIGTERM stops gracefully: the listener closes and an in-flight
+request finishes first. The server is also a library module, `julia1::server`.
+
 ## Demo: Julia plays the Chrome dino game
 
 `examples/dino` serves the [T-Rex runner](https://github.com/congerh/dino) locally.
@@ -202,6 +236,11 @@ julia1 = "0.1"                                   # CPU
 
 CUDA is never on by default: enable the `cuda` feature from your own `Cargo.toml` (it compiles
 `src/cuda/kernels.cu` with nvcc). Without it the crate is pure Rust.
+
+`julia1` loads the CUDA driver and cuBLAS at run time (cudarc's `dynamic-loading`), so a CUDA build starts
+fine on a machine without CUDA. candle-based crates (gliner-rs, locate-anything, phonon-rs) link it
+(`dynamic-linking`) instead, and cudarc refuses to build with both: do not enable `julia1/cuda` in the same
+binary as another crate's `cuda` feature. The CPU build of `julia1` combines with anything.
 
 ```rust
 use julia1::{Engine, EngineOptions, State};
