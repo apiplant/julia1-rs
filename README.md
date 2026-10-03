@@ -234,6 +234,15 @@ julia1 = "0.1"                                   # CPU
 # julia1 = { version = "0.1", features = ["cuda"] }   # + CUDA (opt-in; needs nvcc to build)
 ```
 
+`cli` (the `julia1` binary: clap) and `server` (`julia1::server` and `julia1 serve`: ntex, tokio) are on by default so that
+`cargo install julia1` gives the full binary. As a library you rarely need them; turn them off to skip those dependencies
+(about 110 fewer crates):
+
+```toml
+julia1 = { version = "0.2", default-features = false }                      # engine only
+# julia1 = { version = "0.2", default-features = false, features = ["server"] }   # + the HTTP server module
+```
+
 CUDA is never on by default: enable the `cuda` feature from your own `Cargo.toml` (it compiles
 `src/cuda/kernels.cu` with nvcc). Without it the crate is pure Rust.
 

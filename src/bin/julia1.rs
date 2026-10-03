@@ -128,10 +128,13 @@ enum Command {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Predict { engine, input, logits } => predict(&engine.load()?, input, logits),
+        #[cfg(feature = "server")]
         Command::Serve { engine, host, port, model_name, max_request_branches, max_queued } => {
             let config = julia1::server::ServerConfig { max_request_branches: max_request_branches as usize, max_queued: max_queued as usize };
             ntex::rt::System::new("julia1", ntex::rt::DefaultRuntime).block_on(serve(engine, host, port, model_name, config))
         }
+        #[cfg(not(feature = "server"))]
+        Command::Serve { .. } => bail!("this julia1 binary was built without the `server` feature; rebuild with `--features server`"),
         Command::Check { engine, data, reference } => check(&engine.load()?, &data, &reference),
         Command::Bench { engine, data, single, repeats, long_repeats, limit, output } => {
             bench(&engine, &engine.load()?, &data, single, repeats, long_repeats, limit, output)
@@ -139,6 +142,7 @@ fn main() -> Result<()> {
     }
 }
 
+#[cfg(feature = "server")]
 async fn serve(args: EngineArgs, host: String, port: u16, model_name: String, config: julia1::server::ServerConfig) -> Result<()> {
     let engine = std::sync::Arc::new(args.load()?);
     let handle = julia1::server::start_server(&host, port, engine, model_name, config).await?;

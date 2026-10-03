@@ -28,7 +28,7 @@ pub mod model;
 pub mod pyjson;
 pub mod request;
 pub mod router;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
 pub mod server;
 pub mod typed;
 pub mod weights;
