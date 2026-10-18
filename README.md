@@ -36,7 +36,7 @@ echo '{"state": "I was charged twice for the same order.", "questions": {"team":
   "instructions": "Which team should handle this request?",
   "criteria": {"billing": "Billing and payment disputes", "shipping": "Shipping and delivery",
                "access": "Account access and login"}}}}' \
-  | ./target/release/julia1 predict --device cuda      # --checkpoint /path/to/Julia-1 to use a local copy
+  | julia1 predict --device cuda      # --checkpoint /path/to/Julia-1 to use a local copy
 ```
 
 ```rust
@@ -210,7 +210,7 @@ machine:
 ```bash
 cargo test --release --features cuda   # JULIA_CHECKPOINT=/path/to/Julia-1 for checkpoint tests
 python3 bench/py_bench.py export && python3 bench/py_bench.py reference --device cpu
-./target/release/julia1 check --device cpu      # parity vs bench/data/ref-cpu.json
+julia1 check --device cpu      # parity vs bench/data/ref-cpu.json
 ```
 
 ## Not ported
