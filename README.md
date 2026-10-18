@@ -28,6 +28,30 @@ cargo build --release --features cuda    # + CUDA (needs nvcc; compute capabilit
 - `JULIA_CUDA_ARCHS` (default `80,86,89,90,120`) picks the SASS targets. PTX for
   `compute_80` is always embedded.
 
+## Models
+
+The checkpoint lives in `~/.cache/julia1-rs/Julia-1` (`$XDG_CACHE_HOME/julia1-rs`). The first run downloads it from Hugging Face (577 MB) when it is missing.
+
+If you already have the files (from `git lfs`, `hf download` or another machine), skip the download by putting them
+where it looks, or symlink them there:
+
+```sh
+mkdir -p ~/.cache/julia1-rs
+ln -s /path/to/Julia-1 ~/.cache/julia1-rs/Julia-1
+```
+
+The directory must contain:
+
+```
+~/.cache/julia1-rs/Julia-1/
+├── julia_config.json
+├── model.safetensors
+├── encoder/config.json
+└── tokenizer/{tokenizer.json,tokenizer_config.json}
+```
+
+Or point at a copy anywhere with `--checkpoint DIR` (`JULIA_CHECKPOINT`).
+
 ## Use
 
 ```bash
