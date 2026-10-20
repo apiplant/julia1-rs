@@ -426,6 +426,21 @@ export function Home() {
         <Stats />
       </section>
 
+      {/* Video */}
+      <section id="video" class="pb-16">
+        <div class="mx-auto aspect-video w-full max-w-3xl overflow-hidden rounded-xl border border-line shadow-2xl">
+          <iframe
+            class="h-full w-full"
+            src="https://www.youtube-nocookie.com/embed/kSQ4i1hKb6A"
+            title="julia1-rs video"
+            loading="lazy"
+            allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            referrerpolicy="strict-origin-when-cross-origin"
+            allowfullscreen
+          />
+        </div>
+      </section>
+
       {/* Question types */}
       <section id="questions" class="pb-16">
         <h2 class="text-2xl font-semibold tracking-tight text-ink">Three kinds of question</h2>
